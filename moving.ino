@@ -20,94 +20,56 @@ const bool    kMatrixVertical = true;
 CRGB leds_plus_safety_pixel[ NUM_LEDS + 1];
 CRGB* const leds( leds_plus_safety_pixel + 1);
 
-//How slow the color changes. The higher the number the slower the color change. Range from 1-255
-#define COLOR_RATE 64
+//How slow the color changes when printing "ICHTHUS". The higher the number the slower the color change. Range from 1-255
+#define COLOR_RATE 32
 //Brightness range: 0-255
-#define BRIGHTNESS 128
+#define BRIGHTNESS 200
 
 // Placeholder string buffer for printing debug message.
 String str;
 
 //Height of a character from ICHTHUS in pixel
-#define CHAR_HEIGHT 8
+#define HEIGHT 8
 //Width of a character from ICHTHUS in pixel
-#define CHAR_WIDTH 5
+#define WIDTH 32
 //Number of characters in ICHTHUS
 #define NUM_CHARS 7
+
+#define NUM_FRAME_WORD 120
+#define NUM_FRAME_FISH 128
 
 /*
  * Pixel art of characther I
  * Element [i] refers to the pixel pattern on row i, with row 0 being at the top.
  * The most significant bit of each element maps to the left-most pixel, and the most least significant bit maps to the right-most pixel.
+ * Bit 1 means the pixel at the position needs to be colored, otherwise it should be left as blank
 */
-const uint8_t charI[CHAR_HEIGHT] = {
-	0x08,
-	0x08,
-	0x08,
-	0x08,
-	0x08,
-	0x08,
-	0x08,
-	0x08
+const uint32_t charWord[HEIGHT] = {
+	0x00044101,
+	0x00044101,
+	0x00044101,
+	0x649DE731,
+	0x14A44909,
+	0x64A44909,
+	0x84A54949,
+	0x77248932
 };
 
-const uint8_t charC[CHAR_HEIGHT] = {
-	0x0C,
-	0x02,
-	0x01,
-	0x01,
-	0x01,
-	0x01,
-	0x02,
-	0x0C
+const uint32_t charGoFish[HEIGHT] = {
+	0x8028038E,
+	0x40820451,
+	0x22048441,
+	0x180E0441,
+	0x1804445D,
+	0x22040451,
+	0x40808451,
+	0x802A039E
 };
 
-const uint8_t charH[CHAR_HEIGHT] = {
-	0x01,
-	0x01,
-	0x01,
-	0x0F,
-	0x09,
-	0x09,
-	0x09,
-	0x09
-};
-
-const uint8_t charT[CHAR_HEIGHT] = {
-	0x04,
-	0x04,
-	0x04,
-	0x0F,
-	0x04,
-	0x04,
-	0x04,
-	0x0C
-};
-
-const uint8_t charU[CHAR_HEIGHT] = {
-	0x11,
-	0x11,
-	0x11,
-	0x11,
-	0x11,
-	0x11,
-	0x11,
-	0x0E
-};
-
-const uint8_t charS[CHAR_HEIGHT] = {
-	0x1C,
-	0x02,
-	0x02,
-	0x04,
-	0x08,
-	0x08,
-	0x08,
-	0x07
-};
-
-// Chars in ICHTHUS from left to right
-const uint8_t* charPixels[NUM_CHARS] = {charI, charC, charH, charT, charH, charU, charS};
+typedef enum {
+  STATE_WORD = 0x0,
+  STATE_MOVE = 0x1
+} STATE;
 
 // Helper functions for an two-dimensional XY matrix of pixels.
 // Adapted from http://fastled.io/docs/_x_y_matrix_8ino-example.html
@@ -229,22 +191,32 @@ int16_t XYsafe( int16_t x, int16_t y)
  * colorPixels: pointer to the color pixel buffer
  * color:       foreground color of the letters
 */
-void draw_character(const uint8_t** pixels, int16_t y, int16_t x, CRGB* colorPixels, CRGB color) {
-	uint16_t num_pixels = (uint8_t) NUM_CHARS * (uint8_t) CHAR_HEIGHT;
-	for (uint8_t charY=0; charY<CHAR_HEIGHT; charY++) {
-		for (uint8_t idxChar=0; idxChar<NUM_CHARS; idxChar++) {
-			const uint8_t* charMap = pixels[idxChar];
-			for (uint8_t charX=0; charX<CHAR_WIDTH; charX++) {
-				int16_t paintX = idxChar * (int8_t) CHAR_WIDTH + charX + x;
-				int16_t paintY = charY + y;
+void draw_frame(const uint32_t* pixels, int16_t y, int16_t x, CRGB* colorPixels, CRGB color) {
+	uint16_t num_pixels = (uint8_t) NUM_CHARS * (uint8_t) HEIGHT;
+	for (uint8_t charY=0; charY<HEIGHT; charY++) {
+		for (uint8_t charX=0; charX<WIDTH; charX++) {
+			int16_t paintX = charX + x;
+			int16_t paintY = charY + y;
 
-				uint8_t drawPixel = charMap[charY] & (((uint8_t) 1) << charX);
-				CRGB paintColor = drawPixel ? color : (CRGB::Black);
+			uint32_t drawPixel = pixels[charY] & (((uint32_t) 1) << charX);
+			CRGB paintColor = drawPixel ? color : (CRGB::Black);
 
-				colorPixels[XYsafe(paintX, paintY)] = paintColor;
-			}
+			colorPixels[XYsafe(paintX, paintY)] = paintColor;
 		}
 	}
+}
+
+// Paint everything black
+void clear_screen (CRGB* colorPixels) {
+  for (uint8_t charY=0; charY<HEIGHT; charY++) {
+    for (uint8_t charX=0; charX<WIDTH; charX++) {
+      int16_t paintX = charX;
+      int16_t paintY = charY;
+      CRGB paintColor = CRGB::Black;
+
+      colorPixels[XYsafe(paintX, paintY)] = paintColor;
+    }
+  }
 }
 
 
@@ -252,24 +224,65 @@ int8_t calculateHue(uint32_t ms) {
 	return ((ms / COLOR_RATE) % 256);
 }
 
+uint32_t timer;
+STATE currState;
+int16_t move_x;
+int16_t move_y;
+
 void setup() {
   // put your setup code here, to run once:
   FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS);  // GRB ordering is assumed
   Serial.begin(9600);
+  timer = 0;
+  currState = STATE_WORD;
+  move_x = 32;
+  move_y = 0;
 }
 
 void loop() {
+  // Progression of frame
+  // STATE_WORD: draw ichthus and display statically, except with changing color for a while
+  // STATE_MOVE: move "GO [fish]" from left to right and scroll over repeated for a while 
+  // STATE_WORD --> STATE_MOVE --> STATE_WORD --> etc
   // set up ms
   uint32_t ms = millis();
   int8_t hue = calculateHue(ms);
   //Serial.println(str+"Hi");
 
   // put your main code here, to run repeatedly:
-  CRGB color = CHSV(hue, 255, 255);
+  CRGB wordColor = CHSV(hue, 255, 255);
   
-  //Draw ICHTHUS with a negative X offset so that all the letters can fit on a 8x32 LED array
-  draw_character(charPixels, 0, (int16_t) (-3), leds, color);
   FastLED.setBrightness( BRIGHTNESS );
-  FastLED.show();
+
   //delay(2000);
+  clear_screen(leds);
+  STATE nextState = currState;
+  if (currState == STATE_WORD) {
+    //draw_frame(const uint32_t* pixels, int16_t y, int16_t x, CRGB* colorPixels, CRGB color)
+    draw_frame(charWord, 0, 0, leds, wordColor);
+    timer += 1;
+    if (timer == NUM_FRAME_WORD) {
+      timer = 0;
+      nextState = STATE_MOVE;
+      move_y = 0;
+      move_x = 32;
+    }
+  } else {
+    draw_frame(charGoFish, move_y, move_x, leds, CRGB::White);
+    timer += 1;
+    move_x -= 1;
+    move_y = 0;
+
+    if (move_x == -32) {
+      move_x = 32;
+    }
+    if (timer == NUM_FRAME_FISH) {
+      timer = 0;
+      nextState = STATE_WORD;
+    }
+  }
+  //About 12 FPS
+  delay(80);
+  FastLED.show();
+  currState = nextState;
 }
